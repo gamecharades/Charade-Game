@@ -201,24 +201,38 @@ function makeRoomState(roomCode: string, host: Player, settings: RoomSettings = 
 }
 
 function upsertPlayer(players: Player[], player: Player) {
-  return players.some((item) => item.id === player.id)
+  const nextPlayers = players.some((item) => item.id === player.id)
     ? players.map((item) => (item.id === player.id ? mergePlayer(item, player) : item))
     : [...players, player];
+  return autoAssignTeams(nextPlayers);
 }
 
 function addPlayerToRoom(players: Player[], player: Player) {
   if (players.some((item) => item.id === player.id)) {
     return resetReadyIfTeamsUnbalanced(
-      updatePlayer(players, player.id, (existing) => mergePlayer(existing, player)),
+      autoAssignTeams(updatePlayer(players, player.id, (existing) => mergePlayer(existing, player))),
     );
   }
-  const counts = getCounts(players);
-  const teamId: TeamId = counts.teamOne <= counts.teamTwo ? 1 : 2;
-  return resetReadyIfTeamsUnbalanced([...players, { ...player, teamId, isReady: false }]);
+  return resetReadyIfTeamsUnbalanced(autoAssignTeams([...players, { ...player, isReady: false }]));
 }
 
 function mergePlayer(existing: Player, incoming: Player) {
-  return (incoming.updatedAt ?? 0) >= (existing.updatedAt ?? 0) ? incoming : existing;
+  if ((incoming.updatedAt ?? 0) < (existing.updatedAt ?? 0)) {
+    return existing;
+  }
+  return {
+    ...existing,
+    name: incoming.name,
+    isReady: incoming.isReady,
+    updatedAt: incoming.updatedAt,
+  };
+}
+
+function autoAssignTeams(players: Player[]) {
+  return players.map((player, index) => {
+    const teamId: TeamId = index % 2 === 0 ? 1 : 2;
+    return { ...player, teamId };
+  });
 }
 
 function updatePlayer(
@@ -456,12 +470,6 @@ export function App() {
 
   function updatePlayerName(name: string) {
     setPlayerName(name);
-    setPlayerUpdatedAt(Date.now());
-  }
-
-  function chooseTeam(nextTeamId: TeamId) {
-    setTeamId(nextTeamId);
-    setIsReady(false);
     setPlayerUpdatedAt(Date.now());
   }
 
@@ -1080,10 +1088,8 @@ export function App() {
               teams={roomState.teams}
               players={roomState.players}
               localPlayerId={playerId}
-              localTeamId={teamId}
               localPlayerName={playerName}
               setLocalPlayerName={updatePlayerName}
-              chooseTeam={chooseTeam}
               toggleReady={toggleReady}
               canReady={teamsReadyBalanced}
             />
@@ -1245,20 +1251,16 @@ function TeamReadyPanel({
   teams,
   players,
   localPlayerId,
-  localTeamId,
   localPlayerName,
   setLocalPlayerName,
-  chooseTeam,
   toggleReady,
   canReady,
 }: {
   teams: [Team, Team];
   players: Player[];
   localPlayerId: string;
-  localTeamId: TeamId;
   localPlayerName: string;
   setLocalPlayerName: (name: string) => void;
-  chooseTeam: (teamId: TeamId) => void;
   toggleReady: (ready: boolean) => void;
   canReady: boolean;
 }) {
@@ -1267,7 +1269,7 @@ function TeamReadyPanel({
   return (
     <div className="panel team-ready-panel">
       <div className="panel-heading">
-        <h2>Choose your team</h2>
+        <h2>Teams</h2>
         <span>{players.length}/4 joined</span>
       </div>
       <label className="field-label">
@@ -1281,21 +1283,13 @@ function TeamReadyPanel({
       <div className="team-ready-grid">
         {teams.map((team) => {
           const teamPlayers = players.filter((player) => player.teamId === team.id);
-          const isSelected = localTeamId === team.id;
+          const hasLocalPlayer = teamPlayers.some((player) => player.id === localPlayerId);
           return (
-            <article className={isSelected ? "team-ready-card selected" : "team-ready-card"} key={team.id}>
+            <article className={hasLocalPlayer ? "team-ready-card selected" : "team-ready-card"} key={team.id}>
               <div className="team-ready-header">
                 <strong>{team.name}</strong>
-                <span>{teamPlayers.length}/2</span>
+                <span>{hasLocalPlayer ? `Your team - ${teamPlayers.length}/2` : `${teamPlayers.length}/2`}</span>
               </div>
-              <button
-                className={isSelected ? "small-button selected" : "small-button"}
-                type="button"
-                onClick={() => chooseTeam(team.id)}
-                disabled={isSelected}
-              >
-                {isSelected ? "Selected" : "Join"}
-              </button>
               <div className="team-roster">
                 {teamPlayers.map((player) => (
                   <label className="ready-row" key={player.id}>
@@ -1325,8 +1319,8 @@ function TeamReadyPanel({
       </div>
       <p className="status-line">
         {canReady
-          ? "Ready is unlocked. Tick your box when your team choice is final. The game starts automatically when all 4 players are ready."
-          : "Balance the room to exactly 2 players on each team to unlock ready."}
+          ? "Ready is unlocked. Tick your box when you are ready. The game starts automatically when all 4 players are ready."
+          : "Teams are assigned automatically. Ready unlocks when 4 players have joined."}
       </p>
     </div>
   );
