@@ -129,6 +129,7 @@ type RoomSettings = {
 type BroadcastPayload =
   | { type: "state-sync"; state: RoomState; targetId?: string }
   | { type: "state-request"; player: Player }
+  | { type: "game-started"; state: RoomState }
   | { type: "player-updated"; player: Player }
   | { type: "proposal-created"; proposal: MediaProposal }
   | { type: "proposal-voted"; proposalId: string; playerId: string }
@@ -439,12 +440,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!roomState || !isHost || roomState.phase !== "lobby") {
+    if (!roomState || !isHost) {
       return;
     }
     const interval = window.setInterval(() => {
       const current = stateRef.current;
-      if (current?.phase === "lobby") {
+      if (current) {
         void broadcast({ type: "state-sync", state: current });
       }
     }, 1200);
@@ -452,7 +453,7 @@ export function App() {
   }, [roomState?.roomCode, roomState?.phase, isHost]);
 
   useEffect(() => {
-    if (!roomState || isHost || roomState.phase !== "lobby") {
+    if (!roomState || isHost) {
       return;
     }
     const interval = window.setInterval(() => {
@@ -537,6 +538,17 @@ export function App() {
     await channelRef.current.send({ type: "broadcast", event: "game", payload });
   }
 
+  function broadcastStateBurst(state: RoomState, includeGameStarted = false) {
+    [0, 300, 900, 1800].forEach((delay) => {
+      window.setTimeout(() => {
+        void broadcast({ type: "state-sync", state });
+        if (includeGameStarted) {
+          void broadcast({ type: "game-started", state });
+        }
+      }, delay);
+    });
+  }
+
   function commitState(updater: (state: RoomState) => RoomState) {
     const current = stateRef.current;
     if (!current) {
@@ -609,7 +621,19 @@ export function App() {
       return;
     }
 
+    if (payload.type === "game-started") {
+      const shouldForceStart = !current || current.phase === "lobby";
+      if (shouldForceStart || payload.state.revision >= current.revision) {
+        setSyncedState(payload.state, shouldForceStart);
+      }
+      return;
+    }
+
     if (payload.type === "state-request" && current?.hostId === playerId) {
+      if (current.phase !== "lobby") {
+        void broadcast({ type: "state-sync", state: current, targetId: payload.player.id });
+        return;
+      }
       const nextState = commitState((state) => ({ ...state, players: addPlayerToRoom(state.players, payload.player) }));
       if (nextState) {
         void broadcast({ type: "state-sync", state: nextState, targetId: payload.player.id });
@@ -844,7 +868,7 @@ export function App() {
   }
 
   function startGame() {
-    commitState((state) => {
+    const nextState = commitState((state) => {
       const selectedCategory = state.selectedCategory ?? CATEGORY_PACKS[0].id;
       const selectedDifficulty = state.selectedDifficulty ?? "normal";
       const generatedClues = generateCardPack(selectedCategory, selectedDifficulty).map((card) => ({
@@ -873,6 +897,9 @@ export function App() {
         lastResult: null,
       };
     });
+    if (nextState) {
+      broadcastStateBurst(nextState, true);
+    }
   }
 
   function beginTurn() {
