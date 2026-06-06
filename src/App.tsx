@@ -446,6 +446,7 @@ export function App() {
     const interval = window.setInterval(() => {
       const current = stateRef.current;
       if (current) {
+        void saveRoomState(current);
         void broadcast({ type: "state-sync", state: current });
       }
     }, 1200);
@@ -457,6 +458,7 @@ export function App() {
       return;
     }
     const interval = window.setInterval(() => {
+      void loadRoomState(roomState.roomCode);
       void broadcast({ type: "state-request", player });
     }, 1500);
     return () => window.clearInterval(interval);
@@ -538,9 +540,39 @@ export function App() {
     await channelRef.current.send({ type: "broadcast", event: "game", payload });
   }
 
+  async function saveRoomState(state: RoomState) {
+    try {
+      await fetch(`/api/rooms/${encodeURIComponent(state.roomCode)}/state`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state }),
+      });
+    } catch {
+      // Realtime still works locally if the Render state endpoint is unavailable.
+    }
+  }
+
+  async function loadRoomState(roomCode: string) {
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(roomCode)}/state`, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json();
+      if (data.state) {
+        setSyncedState(data.state);
+      }
+    } catch {
+      // Ignore polling failures; the next tick or realtime message can recover.
+    }
+  }
+
   function broadcastStateBurst(state: RoomState, includeGameStarted = false) {
     [0, 300, 900, 1800].forEach((delay) => {
       window.setTimeout(() => {
+        void saveRoomState(state);
         void broadcast({ type: "state-sync", state });
         if (includeGameStarted) {
           void broadcast({ type: "game-started", state });
@@ -556,6 +588,7 @@ export function App() {
     }
     const nextState = { ...updater(current), revision: current.revision + 1 };
     setSyncedState(nextState);
+    void saveRoomState(nextState);
     void broadcast({ type: "state-sync", state: nextState });
     return nextState;
   }
@@ -604,8 +637,10 @@ export function App() {
       if (asHost) {
         const nextState = makeRoomState(cleanCode, nextPlayer, settings);
         setSyncedState(nextState, true);
+        await saveRoomState(nextState);
         await broadcast({ type: "state-sync", state: nextState });
       } else {
+        await loadRoomState(cleanCode);
         await broadcast({ type: "state-request", player: nextPlayer });
       }
     });
