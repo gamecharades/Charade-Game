@@ -35,17 +35,15 @@ button:disabled {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(320px, 500px) minmax(300px, 440px);
+  grid-template-columns: minmax(320px, 560px);
   justify-content: center;
-  gap: 24px;
   padding: 24px;
   background:
     radial-gradient(circle at top left, rgba(238, 99, 82, 0.18), transparent 30%),
     linear-gradient(135deg, #f5f1e8 0%, #ecf4ef 48%, #f7dfc8 100%);
 }
 
-.game-surface,
-.signal-guide {
+.game-surface {
   min-height: calc(100vh - 48px);
   border: 1px solid rgba(24, 32, 47, 0.12);
   background: rgba(255, 255, 255, 0.76);
@@ -72,7 +70,6 @@ button:disabled {
 .topbar h1,
 .topbar p,
 .panel h2,
-.signal-guide h2,
 .secret-card h2,
 .waiting-card h2,
 .prompt-lockup h2,
@@ -251,62 +248,73 @@ button:disabled {
   font-weight: 800;
 }
 
-.vote-panel {
+.team-ready-panel {
   display: grid;
   gap: 12px;
 }
 
-.vote-grid {
+.team-ready-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
 
-.vote-card,
-.difficulty-card {
+.team-ready-card {
   display: grid;
-  gap: 6px;
+  gap: 10px;
   border: 1px solid rgba(24, 32, 47, 0.1);
   border-radius: 8px;
   background: #fbfaf7;
-  color: #18202f;
   padding: 12px;
-  text-align: left;
 }
 
-.vote-card.selected,
-.difficulty-card.selected {
+.team-ready-card.selected {
   border-color: #0c8f74;
-  background: #f2fbf7;
   box-shadow: inset 0 0 0 2px rgba(12, 143, 116, 0.14);
 }
 
-.vote-card strong,
-.difficulty-card strong {
-  font-size: 0.92rem;
+.team-ready-header,
+.ready-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.vote-card span,
-.difficulty-card span {
+.team-ready-header span {
   color: #657086;
-  font-size: 0.76rem;
-  font-weight: 700;
-  line-height: 1.28;
-}
-
-.vote-card em,
-.difficulty-card em {
-  color: #e9523e;
-  font-size: 0.72rem;
-  font-style: normal;
+  font-size: 0.82rem;
   font-weight: 900;
-  text-transform: uppercase;
 }
 
-.difficulty-grid {
+.team-roster {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+.ready-row {
+  min-height: 38px;
+  border-radius: 8px;
+  background: white;
+  padding: 8px 10px;
+  color: #18202f;
+  font-weight: 800;
+}
+
+.ready-row.empty {
+  color: #8a94a6;
+  font-weight: 700;
+}
+
+.ready-row input {
+  width: 20px;
+  height: 20px;
+  accent-color: #0c8f74;
+}
+
+.small-button.selected {
+  background: #0c8f74;
+  color: white;
 }
 
 .pack-banner {
@@ -885,44 +893,6 @@ button:disabled {
   font-weight: 900;
 }
 
-.signal-guide {
-  align-self: start;
-  min-height: auto;
-  border-radius: 18px;
-  padding: 18px;
-}
-
-.signal-grid {
-  display: grid;
-  gap: 10px;
-}
-
-.signal-card {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  border: 1px solid rgba(24, 32, 47, 0.1);
-  border-radius: 8px;
-  background: #fffdf8;
-  padding: 12px;
-}
-
-.signal-card svg {
-  flex: 0 0 auto;
-  color: #e9523e;
-}
-
-.signal-card strong {
-  display: block;
-}
-
-.signal-card p {
-  margin: 3px 0 0;
-  color: #657086;
-  font-size: 0.88rem;
-  line-height: 1.35;
-}
-
 @media (max-width: 880px) {
   .app-shell {
     display: block;
@@ -934,13 +904,6 @@ button:disabled {
     border: 0;
     border-radius: 0;
   }
-
-  .signal-guide {
-    min-height: auto;
-    border-radius: 0;
-    border-inline: 0;
-    box-shadow: none;
-  }
 }
 
 @media (max-width: 460px) {
@@ -949,7 +912,7 @@ button:disabled {
   }
 
   .settings-grid,
-  .difficulty-grid,
+  .team-ready-grid,
   .turn-controls,
   .join-row,
   .search-row,

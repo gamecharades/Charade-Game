@@ -6,29 +6,21 @@ import {
   Clapperboard,
   Clock,
   Copy,
-  Ear,
-  Film,
-  Flame,
-  Hand,
   Image as ImageIcon,
   Link,
   Loader2,
   Mic,
-  Mic2,
-  Music2,
   PenLine,
   Play,
   Plus,
   Radio,
   RefreshCw,
-  Send,
   Shuffle,
   ShieldCheck,
   Square,
   ThumbsDown,
   Trash2,
   Trophy,
-  Tv,
   Volume2,
   Users,
   X,
@@ -42,7 +34,6 @@ import {
   generateCardPack,
   getCategoryName,
   getDifficultyName,
-  getTotalCardCount,
 } from "./cardBank";
 import { isSupabaseConfigured, supabase } from "./supabase";
 
@@ -108,8 +99,6 @@ type RoomState = {
   phase: Phase;
   turnSeconds: number;
   winningScore: number;
-  categoryVotes: Record<string, CategoryId>;
-  difficultyVotes: Record<string, DifficultyId>;
   selectedCategory: CategoryId | null;
   selectedDifficulty: DifficultyId | null;
   clues: Clue[];
@@ -132,58 +121,27 @@ type BroadcastPayload =
   | { type: "state-request"; player: Player }
   | { type: "player-joined"; player: Player }
   | { type: "player-updated"; player: Player }
-  | { type: "vote-cast"; playerId: string; categoryId?: CategoryId; difficulty?: DifficultyId }
-  | { type: "clue-added"; clue: Clue }
   | { type: "proposal-created"; proposal: MediaProposal }
   | { type: "proposal-voted"; proposalId: string; playerId: string }
   | { type: "host-action"; action: "start-game" | "begin-turn" | "next-turn" | "reset-game" }
   | { type: "finish-turn"; outcome: Exclude<TurnOutcome, null> };
-
-const clueCategories = CATEGORY_PACKS.map((category) => category.name);
-
-const starterClues = [
-  { text: "The Lion King", category: "Movie" },
-  { text: "Shake It Off", category: "Song" },
-  { text: "Harry Potter", category: "Book" },
-  { text: "Breaking Bad", category: "TV Show" },
-  { text: "Romeo and Juliet", category: "Play" },
-  { text: "A piece of cake", category: "Idiom" },
-  { text: "Spider-Man", category: "Person" },
-  { text: "Finding Nemo", category: "Movie" },
-  { text: "Let it Go", category: "Song" },
-  { text: "The Office", category: "TV Show" },
-];
-
-const signalCards = [
-  { icon: BookOpen, label: "Book", hint: "Open your hands like pages." },
-  { icon: Film, label: "Movie", hint: "Crank an old film camera." },
-  { icon: Mic2, label: "Song", hint: "Sing into an imaginary mic." },
-  { icon: Tv, label: "TV Show", hint: "Draw a screen in the air." },
-  { icon: Music2, label: "Play", hint: "Conduct a stage performance." },
-  { icon: Ear, label: "Sounds like", hint: "Cup your hand behind your ear." },
-  { icon: Hand, label: "Word count", hint: "Hold up fingers for total words." },
-  { icon: Flame, label: "Warmer", hint: "Wave teammates closer to the idea." },
-];
 
 const defaultTeams: [Team, Team] = [
   { id: 1, name: "Team Moonshot", score: 0 },
   { id: 2, name: "Team High Five", score: 0 },
 ];
 
-const categoryIds = CATEGORY_PACKS.map((category) => category.id);
-const difficultyIds = DIFFICULTIES.map((difficulty) => difficulty.id);
-
 function makeId() {
   return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 }
 
 function getStoredPlayerId() {
-  const stored = localStorage.getItem("charades-player-id");
+  const stored = sessionStorage.getItem("charades-player-id");
   if (stored) {
     return stored;
   }
   const id = makeId();
-  localStorage.setItem("charades-player-id", id);
+  sessionStorage.setItem("charades-player-id", id);
   return id;
 }
 
@@ -195,10 +153,6 @@ function shuffleClues(clues: Clue[]) {
   return [...clues].sort(() => Math.random() - 0.5);
 }
 
-function makeStarterClues(authorId: string): Clue[] {
-  return starterClues.map((clue, index) => ({ ...clue, id: `starter-${index + 1}`, authorId }));
-}
-
 function makeRoomState(roomCode: string, host: Player): RoomState {
   return {
     roomCode,
@@ -208,9 +162,7 @@ function makeRoomState(roomCode: string, host: Player): RoomState {
     phase: "lobby",
     turnSeconds: 90,
     winningScore: 7,
-    categoryVotes: {},
-    difficultyVotes: {},
-    selectedCategory: null,
+    selectedCategory: CATEGORY_PACKS[0].id,
     selectedDifficulty: "normal",
     clues: [],
     deck: [],
@@ -275,20 +227,6 @@ function resetReadyIfTeamsUnbalanced(players: Player[]) {
     return players;
   }
   return players.map((player) => ({ ...player, isReady: false }));
-}
-
-function countVotes<T extends string>(votes: Record<string, T>, options: readonly T[]) {
-  return options.map((option) => ({
-    id: option,
-    count: Object.values(votes).filter((vote) => vote === option).length,
-  }));
-}
-
-function resolveVote<T extends string>(votes: Record<string, T>, options: readonly T[]) {
-  const totals = countVotes(votes, options);
-  const highest = Math.max(...totals.map((item) => item.count));
-  const leaders = totals.filter((item) => item.count === highest).map((item) => item.id);
-  return leaders[Math.floor(Math.random() * leaders.length)] ?? options[0];
 }
 
 function getTurnId(state: RoomState) {
@@ -368,8 +306,6 @@ export function App() {
   const [roomInput, setRoomInput] = useState("");
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [connectionStatus, setConnectionStatus] = useState("Offline setup");
-  const [newClueText, setNewClueText] = useState("");
-  const [newClueCategory, setNewClueCategory] = useState(clueCategories[0]);
   const [imageQuery, setImageQuery] = useState("");
   const [imageResults, setImageResults] = useState<ImageResult[]>([]);
   const [imageSearchStatus, setImageSearchStatus] = useState("");
@@ -397,11 +333,6 @@ export function App() {
     : "";
   const counts = roomState ? getCounts(roomState.players) : { teamOne: 0, teamTwo: 0 };
   const teamsReadyBalanced = roomState ? teamsAreReadyBalanced(roomState.players) : false;
-  const localCategoryVote = roomState?.categoryVotes[playerId] ?? null;
-  const allPlayersPickedField = Boolean(
-    roomState?.players.every((item) => roomState.categoryVotes[item.id]),
-  );
-  const hasPickedDeck = Boolean(localCategoryVote);
   const readyCounts = roomState
     ? {
         teamOne: roomState.players.filter((item) => item.teamId === 1 && item.isReady).length,
@@ -432,7 +363,8 @@ export function App() {
     counts.teamTwo === 2 &&
     readyCounts.teamOne === 2 &&
     readyCounts.teamTwo === 2 &&
-    allPlayersPickedField;
+    Boolean(roomState!.selectedCategory) &&
+    Boolean(roomState!.selectedDifficulty);
 
   useEffect(() => {
     stateRef.current = roomState;
@@ -466,6 +398,12 @@ export function App() {
       finishTurn("expired");
     }
   }, [roomState?.phase, secondsLeft, isHost]);
+
+  useEffect(() => {
+    if (roomState?.phase === "lobby" && canStart && isHost) {
+      startGame();
+    }
+  }, [roomState?.phase, canStart, isHost]);
 
   useEffect(() => {
     if (!roomState || !localPlayer) {
@@ -609,19 +547,6 @@ export function App() {
       }));
     }
 
-    if (payload.type === "vote-cast") {
-      commitState((state) => ({
-        ...state,
-        categoryVotes: payload.categoryId
-          ? { ...state.categoryVotes, [payload.playerId]: payload.categoryId }
-          : state.categoryVotes,
-      }));
-    }
-
-    if (payload.type === "clue-added") {
-      commitState((state) => ({ ...state, clues: [payload.clue, ...state.clues] }));
-    }
-
     if (payload.type === "proposal-created") {
       commitState((state) => ({
         ...state,
@@ -659,31 +584,6 @@ export function App() {
 
   function joinRoom() {
     void connect(roomInput, player, false);
-  }
-
-  function addClue() {
-    const trimmed = newClueText.trim();
-    if (!trimmed) {
-      return;
-    }
-    const clue: Clue = { id: makeId(), text: trimmed, category: newClueCategory, authorId: playerId };
-    setNewClueText("");
-    if (isHost || !isSupabaseConfigured) {
-      commitState((state) => ({ ...state, clues: [clue, ...state.clues] }));
-      return;
-    }
-    void broadcast({ type: "clue-added", clue });
-  }
-
-  function castLobbyVote(categoryId: CategoryId) {
-    if (isHost || !isSupabaseConfigured) {
-      commitState((state) => ({
-        ...state,
-        categoryVotes: { ...state.categoryVotes, [playerId]: categoryId },
-      }));
-      return;
-    }
-    void broadcast({ type: "vote-cast", playerId, categoryId });
   }
 
   async function searchImages() {
@@ -864,12 +764,12 @@ export function App() {
 
   function startGame() {
     commitState((state) => {
-      const selectedCategory = resolveVote(state.categoryVotes, categoryIds);
+      const selectedCategory = state.selectedCategory ?? CATEGORY_PACKS[0].id;
       const selectedDifficulty = state.selectedDifficulty ?? "normal";
       const generatedClues = generateCardPack(selectedCategory, selectedDifficulty).map((card) => ({
         id: card.id,
         text: card.text,
-        category: `${card.categoryName} · ${getDifficultyName(card.difficulty)}`,
+        category: `${card.categoryName} - ${getDifficultyName(card.difficulty)}`,
         difficulty: card.difficulty,
         authorId: "card-bank",
       }));
@@ -961,7 +861,7 @@ export function App() {
       ...state,
       phase: "lobby",
       teams: state.teams.map((team) => ({ ...team, score: 0 })) as [Team, Team],
-      selectedCategory: null,
+      selectedCategory: state.selectedCategory ?? CATEGORY_PACKS[0].id,
       selectedDifficulty: state.selectedDifficulty ?? "normal",
       deck: [],
       currentTeamIndex: 0,
@@ -996,6 +896,13 @@ export function App() {
       return;
     }
     commitState((state) => ({ ...state, selectedDifficulty: difficulty }));
+  }
+
+  function updateCategory(category: CategoryId) {
+    if (!isHost) {
+      return;
+    }
+    commitState((state) => ({ ...state, selectedCategory: category }));
   }
 
   async function copyInvite() {
@@ -1062,104 +969,88 @@ export function App() {
         {roomState?.phase === "lobby" && (
           <section className="screen setup-screen">
             <RoomHeader roomState={roomState} shareUrl={shareUrl} copyInvite={copyInvite} />
-            <Scoreboard teams={roomState.teams} activeTeamId={teamId} />
 
-            <CategoryVotingPanel
-              localCategoryVote={localCategoryVote}
-              castVote={castLobbyVote}
-            />
-
-            {hasPickedDeck ? (
-              <TeamReadyPanel
-                teams={roomState.teams}
-                players={roomState.players}
-                localPlayerId={playerId}
-                localTeamId={teamId}
-                localPlayerName={playerName}
-                setLocalPlayerName={setPlayerName}
-                chooseTeam={chooseTeam}
-                toggleReady={toggleReady}
-                canReady={teamsReadyBalanced}
-              />
-            ) : (
-              <div className="panel waiting-panel">
-                <div className="panel-heading">
-                  <h2>Choose a field first</h2>
-                  <span>{roomState.players.length}/4 joined</span>
-                </div>
-                <p className="status-line">
-                  Pick a field. Team selection unlocks after your choice is saved.
-                </p>
+            {isHost && (
+              <div className="settings-grid host-settings">
+                <label className="setting-card">
+                  <BookOpen size={18} />
+                  <span>Field</span>
+                  <select
+                    value={roomState.selectedCategory ?? CATEGORY_PACKS[0].id}
+                    onChange={(event) => updateCategory(event.target.value as CategoryId)}
+                  >
+                    {CATEGORY_PACKS.map((category) => (
+                      <option value={category.id} key={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="setting-card">
+                  <Shuffle size={18} />
+                  <span>Difficulty</span>
+                  <select
+                    value={roomState.selectedDifficulty ?? "normal"}
+                    onChange={(event) => updateDifficulty(event.target.value as DifficultyId)}
+                  >
+                    {DIFFICULTIES.map((difficulty) => (
+                      <option value={difficulty.id} key={difficulty.id}>
+                        {difficulty.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {roomState.teams.map((team) => (
+                  <label className="setting-card" key={team.id}>
+                    <Users size={18} />
+                    <span>Team {team.id} name</span>
+                    <input
+                      value={team.name}
+                      onChange={(event) => updateTeamName(team.id, event.target.value)}
+                    />
+                  </label>
+                ))}
+                <label className="setting-card">
+                  <Clock size={18} />
+                  <span>Turn timer</span>
+                  <select
+                    value={roomState.turnSeconds}
+                    onChange={(event) => updateSetting("turnSeconds", Number(event.target.value))}
+                  >
+                    <option value={60}>1 minute</option>
+                    <option value={90}>1.5 minutes</option>
+                    <option value={120}>2 minutes</option>
+                  </select>
+                </label>
+                <label className="setting-card">
+                  <Trophy size={18} />
+                  <span>Winning score</span>
+                  <input
+                    type="number"
+                    min={3}
+                    max={30}
+                    value={roomState.winningScore}
+                    onChange={(event) => updateSetting("winningScore", Number(event.target.value))}
+                  />
+                </label>
               </div>
             )}
 
-            <div className="settings-grid">
-              {roomState.teams.map((team) => (
-                <label className="setting-card" key={team.id}>
-                  <Users size={18} />
-                  <span>Team {team.id}</span>
-                  <input
-                    value={team.name}
-                    disabled={!isHost}
-                    onChange={(event) => updateTeamName(team.id, event.target.value)}
-                  />
-                </label>
-              ))}
-              <label className="setting-card">
-                <Shuffle size={18} />
-                <span>Difficulty</span>
-                <select
-                  value={roomState.selectedDifficulty ?? "normal"}
-                  disabled={!isHost}
-                  onChange={(event) => updateDifficulty(event.target.value as DifficultyId)}
-                >
-                  {DIFFICULTIES.map((difficulty) => (
-                    <option value={difficulty.id} key={difficulty.id}>
-                      {difficulty.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="setting-card">
-                <Clock size={18} />
-                <span>Turn timer</span>
-                <select
-                  value={roomState.turnSeconds}
-                  disabled={!isHost}
-                  onChange={(event) => updateSetting("turnSeconds", Number(event.target.value))}
-                >
-                  <option value={60}>1 minute</option>
-                  <option value={90}>1.5 minutes</option>
-                  <option value={120}>2 minutes</option>
-                </select>
-              </label>
-              <label className="setting-card">
-                <Trophy size={18} />
-                <span>Winning score</span>
-                <input
-                  type="number"
-                  min={3}
-                  max={30}
-                  value={roomState.winningScore}
-                  disabled={!isHost}
-                  onChange={(event) => updateSetting("winningScore", Number(event.target.value))}
-                />
-              </label>
-            </div>
+            {!isHost && roomState.selectedCategory && roomState.selectedDifficulty && (
+              <PackBanner categoryId={roomState.selectedCategory} difficulty={roomState.selectedDifficulty} />
+            )}
 
-            <ClueBuilder
-              clueCount={roomState.clues.length}
-              newClueText={newClueText}
-              newClueCategory={newClueCategory}
-              setNewClueText={setNewClueText}
-              setNewClueCategory={setNewClueCategory}
-              addClue={addClue}
+            <TeamReadyPanel
+              teams={roomState.teams}
+              players={roomState.players}
+              localPlayerId={playerId}
+              localTeamId={teamId}
+              localPlayerName={playerName}
+              setLocalPlayerName={setPlayerName}
+              chooseTeam={chooseTeam}
+              toggleReady={toggleReady}
+              canReady={teamsReadyBalanced}
             />
-
-            <button className="primary-button" type="button" onClick={() => requestAction("start-game")} disabled={!isHost || !canStart}>
-              <Shuffle size={18} />
-              {canStart ? "Start game" : "Need 2 ready players on each team"}
-            </button>
           </section>
         )}
 
@@ -1287,27 +1178,6 @@ export function App() {
           </section>
         )}
       </section>
-
-      <aside className="signal-guide" aria-label="Charades signals">
-        <div className="panel-heading">
-          <h2>Signals</h2>
-          <span>No talking</span>
-        </div>
-        <div className="signal-grid">
-          {signalCards.map((signal) => {
-            const Icon = signal.icon;
-            return (
-              <article className="signal-card" key={signal.label}>
-                <Icon size={22} />
-                <div>
-                  <strong>{signal.label}</strong>
-                  <p>{signal.hint}</p>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      </aside>
     </main>
   );
 }
@@ -1331,39 +1201,6 @@ function RoomHeader({
       <button className="icon-button muted" type="button" onClick={copyInvite} aria-label="Copy invite link">
         <Copy size={20} />
       </button>
-    </div>
-  );
-}
-
-function CategoryVotingPanel({
-  localCategoryVote,
-  castVote,
-}: {
-  localCategoryVote: CategoryId | null;
-  castVote: (categoryId: CategoryId) => void;
-}) {
-  return (
-    <div className="panel vote-panel">
-      <div className="panel-heading">
-        <h2>What field do you feel like playing in?</h2>
-        <span>Pick one</span>
-      </div>
-      <div className="vote-grid">
-        {CATEGORY_PACKS.map((category) => (
-          <button
-            className={localCategoryVote === category.id ? "vote-card selected" : "vote-card"}
-            type="button"
-            key={category.id}
-            onClick={() => castVote(category.id)}
-          >
-            <strong>{category.name}</strong>
-            <span>{category.description}</span>
-          </button>
-        ))}
-      </div>
-      <p className="status-line">
-        If there is no majority, the app randomly chooses from the fields players selected.
-      </p>
     </div>
   );
 }
@@ -1452,7 +1289,7 @@ function TeamReadyPanel({
       </div>
       <p className="status-line">
         {canReady
-          ? "Ready is unlocked. Tick your box when your team choice is final."
+          ? "Ready is unlocked. Tick your box when your team choice is final. The game starts automatically when all 4 players are ready."
           : "Balance the room to exactly 2 players on each team to unlock ready."}
       </p>
     </div>
@@ -1464,52 +1301,8 @@ function PackBanner({ categoryId, difficulty }: { categoryId: CategoryId; diffic
     <div className="pack-banner">
       <strong>{getCategoryName(categoryId)}</strong>
       <span>
-        {getDifficultyName(difficulty)} · {CARDS_PER_PACK.toLocaleString()} cards
+        {getDifficultyName(difficulty)} - {CARDS_PER_PACK.toLocaleString()} cards
       </span>
-    </div>
-  );
-}
-
-function ClueBuilder({
-  clueCount,
-  newClueText,
-  newClueCategory,
-  setNewClueText,
-  setNewClueCategory,
-  addClue,
-}: {
-  clueCount: number;
-  newClueText: string;
-  newClueCategory: string;
-  setNewClueText: (value: string) => void;
-  setNewClueCategory: (value: string) => void;
-  addClue: () => void;
-}) {
-  return (
-    <div className="panel clue-builder">
-      <div className="panel-heading">
-        <h2>Clue bowl</h2>
-        <span className="counter">{clueCount}</span>
-      </div>
-      <div className="clue-form">
-        <input
-          placeholder="Type a movie, song, book, phrase..."
-          value={newClueText}
-          onChange={(event) => setNewClueText(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") addClue();
-          }}
-        />
-        <select value={newClueCategory} onChange={(event) => setNewClueCategory(event.target.value)}>
-          {clueCategories.map((category) => (
-            <option key={category}>{category}</option>
-          ))}
-        </select>
-        <button className="primary-button compact" type="button" onClick={addClue}>
-          <Send size={18} />
-          Add clue
-        </button>
-      </div>
     </div>
   );
 }
