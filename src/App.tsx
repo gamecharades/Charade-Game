@@ -439,6 +439,29 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (!roomState || !isHost || roomState.phase !== "lobby") {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      const current = stateRef.current;
+      if (current?.phase === "lobby") {
+        void broadcast({ type: "state-sync", state: current });
+      }
+    }, 1200);
+    return () => window.clearInterval(interval);
+  }, [roomState?.roomCode, roomState?.phase, isHost]);
+
+  useEffect(() => {
+    if (!roomState || isHost || roomState.phase !== "lobby") {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      void broadcast({ type: "state-request", player });
+    }, 1500);
+    return () => window.clearInterval(interval);
+  }, [roomState?.roomCode, roomState?.phase, isHost, player.id, player.updatedAt]);
+
+  useEffect(() => {
     if (roomState?.phase === "acting" && secondsLeft <= 0 && isHost) {
       finishTurn("expired");
     }
