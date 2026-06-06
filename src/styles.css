@@ -377,6 +377,7 @@ button:disabled {
 .team-input input,
 .clue-form input,
 .clue-form select,
+.guess-form input,
 .search-row input,
 .setting-card input,
 .setting-card select,
@@ -534,9 +535,20 @@ button:disabled {
 }
 
 .media-actions,
-.proposal-list {
+.proposal-list,
+.guess-panel {
   display: grid;
   gap: 10px;
+}
+
+.guess-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.guess-form .primary-button {
+  min-width: 112px;
 }
 
 .sketchpad {
@@ -549,11 +561,7 @@ button:disabled {
   aspect-ratio: 16 / 9;
   border: 1px dashed rgba(24, 32, 47, 0.22);
   border-radius: 8px;
-  background:
-    linear-gradient(rgba(24, 32, 47, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(24, 32, 47, 0.05) 1px, transparent 1px),
-    #fffdf8;
-  background-size: 24px 24px;
+  background: #ffffff;
   touch-action: none;
 }
 
@@ -914,6 +922,7 @@ button:disabled {
   .settings-grid,
   .team-ready-grid,
   .turn-controls,
+  .guess-form,
   .join-row,
   .search-row,
   .sketch-actions,

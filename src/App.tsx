@@ -2,7 +2,6 @@ import { type CSSProperties, type PointerEvent, useEffect, useMemo, useRef, useS
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import {
   BookOpen,
-  Check,
   Clapperboard,
   Clock,
   Copy,
@@ -106,7 +105,9 @@ type RoomState = {
   clues: Clue[];
   deck: Clue[];
   currentTeamIndex: number;
+  actorHistory: Record<TeamId, string | null>;
   currentActorId: string | null;
+  currentGuesserId: string | null;
   currentClue: Clue | null;
   turnStartedAt: number | null;
   turnOutcome: TurnOutcome;
@@ -229,7 +230,9 @@ function makeRoomState(roomCode: string, host: Player, settings: RoomSettings = 
     clues: [],
     deck: [],
     currentTeamIndex: 0,
+    actorHistory: { 1: null, 2: null },
     currentActorId: null,
+    currentGuesserId: null,
     currentClue: null,
     turnStartedAt: null,
     turnOutcome: null,
@@ -290,6 +293,10 @@ function selectActor(players: Player[], teamId: TeamId, previousActorId: string 
   return teamPlayers[(previousIndex + 1 + teamPlayers.length) % teamPlayers.length].id;
 }
 
+function selectGuesser(players: Player[], teamId: TeamId, actorId: string | null) {
+  return players.find((player) => player.teamId === teamId && player.id !== actorId)?.id ?? null;
+}
+
 function getCounts(players: Player[]) {
   return {
     teamOne: players.filter((player) => player.teamId === 1).length,
@@ -311,6 +318,15 @@ function resetReadyIfTeamsUnbalanced(players: Player[]) {
 
 function getTurnId(state: RoomState) {
   return `${state.roomCode}:${state.currentClue?.id ?? "none"}:${state.turnStartedAt ?? "ready"}`;
+}
+
+function normalizeAnswer(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/^(a|an|the)\s+/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function applyProposalChallenge(
@@ -393,6 +409,8 @@ export function App() {
   const [imageSearchStatus, setImageSearchStatus] = useState("");
   const [recordingStatus, setRecordingStatus] = useState("");
   const [isRecording, setIsRecording] = useState(false);
+  const [typedGuess, setTypedGuess] = useState("");
+  const [guessStatus, setGuessStatus] = useState("");
   const [now, setNow] = useState(Date.now());
 
   const player = useMemo<Player>(
@@ -409,6 +427,7 @@ export function App() {
   const isHost = roomState?.hostId === playerId;
   const activeTeam = roomState?.teams[roomState.currentTeamIndex];
   const currentActor = roomState?.players.find((item) => item.id === roomState.currentActorId) ?? null;
+  const currentGuesser = roomState?.players.find((item) => item.id === roomState.currentGuesserId) ?? null;
   const localPlayer = roomState?.players.find((item) => item.id === playerId);
   const canControlTurn = isHost || roomState?.currentActorId === playerId;
   const shareUrl = roomState
@@ -431,8 +450,7 @@ export function App() {
     roomState?.mediaProposals.filter((proposal) => proposal.turnId === currentTurnId) ?? [];
   const deliveredProposals = currentTurnProposals.filter((proposal) => proposal.status === "delivered");
   const isActor = roomState?.currentActorId === playerId;
-  const isActiveGuesser =
-    Boolean(roomState?.phase === "acting" && activeTeam && localPlayer?.teamId === activeTeam.id && !isActor);
+  const isActiveGuesser = Boolean(roomState?.phase === "acting" && roomState.currentGuesserId === playerId);
   const isReviewer =
     Boolean(roomState?.phase === "acting" && activeTeam && localPlayer?.teamId !== activeTeam.id);
   const leader = useMemo(
@@ -475,6 +493,11 @@ export function App() {
     const interval = window.setInterval(() => setNow(Date.now()), 500);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    setTypedGuess("");
+    setGuessStatus("");
+  }, [currentTurnId]);
 
   useEffect(() => {
     if (!roomState || !isHost) {
@@ -542,6 +565,20 @@ export function App() {
     }
     setIsReady(ready);
     setPlayerUpdatedAt(Date.now());
+  }
+
+  function submitGuess() {
+    const answer = roomState?.currentClue?.text;
+    if (!answer) {
+      return;
+    }
+    if (normalizeAnswer(typedGuess) === normalizeAnswer(answer)) {
+      setTypedGuess("");
+      setGuessStatus("");
+      finishTurn("guessed");
+      return;
+    }
+    setGuessStatus("Not correct yet.");
   }
 
   useEffect(() => {
@@ -956,7 +993,9 @@ export function App() {
         `${state.roomCode}:${selectedCategory}:${selectedDifficulty}`,
       );
       const activeTeamId = state.teams[0].id;
-      const actorId = selectActor(state.players, activeTeamId, null);
+      const actorHistory = state.actorHistory ?? { 1: null, 2: null };
+      const actorId = selectActor(state.players, activeTeamId, actorHistory[activeTeamId]);
+      const guesserId = selectGuesser(state.players, activeTeamId, actorId);
       return {
         ...state,
         teams: state.teams.map((team) => ({ ...team, score: 0 })) as [Team, Team],
@@ -965,7 +1004,9 @@ export function App() {
         selectedDifficulty,
         deck,
         currentTeamIndex: 0,
+        actorHistory,
         currentActorId: actorId,
+        currentGuesserId: guesserId,
         currentClue: deck[0] ?? null,
         turnStartedAt: null,
         turnOutcome: null,
@@ -1026,13 +1067,22 @@ export function App() {
         return { ...state, phase: "game-over", deck: remainingDeck, currentClue: null };
       }
       const nextTeamIndex = (state.currentTeamIndex + 1) % state.teams.length;
+      const currentTeamId = state.teams[state.currentTeamIndex].id;
       const nextTeamId = state.teams[nextTeamIndex].id;
+      const actorHistory = {
+        ...(state.actorHistory ?? { 1: null, 2: null }),
+        [currentTeamId]: state.currentActorId,
+      };
+      const nextActorId = selectActor(state.players, nextTeamId, actorHistory[nextTeamId]);
+      const nextGuesserId = selectGuesser(state.players, nextTeamId, nextActorId);
       return {
         ...state,
         phase: "turn-ready",
         deck: remainingDeck,
         currentTeamIndex: nextTeamIndex,
-        currentActorId: selectActor(state.players, nextTeamId, state.currentActorId),
+        actorHistory,
+        currentActorId: nextActorId,
+        currentGuesserId: nextGuesserId,
         currentClue: remainingDeck[0],
         turnStartedAt: null,
         turnOutcome: null,
@@ -1049,7 +1099,9 @@ export function App() {
       selectedDifficulty: state.selectedDifficulty ?? "normal",
       deck: [],
       currentTeamIndex: 0,
+      actorHistory: { 1: null, 2: null },
       currentActorId: null,
+      currentGuesserId: null,
       currentClue: null,
       turnStartedAt: null,
       turnOutcome: null,
@@ -1231,12 +1283,18 @@ export function App() {
             <article className={roomState.currentActorId === playerId ? "secret-card" : "waiting-card"}>
               <p className="eyebrow">{roomState.currentActorId === playerId ? "You are acting" : "Actor is choosing"}</p>
               <h2>{roomState.currentActorId === playerId ? roomState.currentClue?.text : currentActor?.name ?? "Actor"}</h2>
-              <span>{roomState.currentActorId === playerId ? roomState.currentClue?.category : activeTeam.name}</span>
+              <span>
+                {roomState.currentActorId === playerId
+                  ? roomState.currentClue?.category
+                  : currentGuesser?.id === playerId
+                    ? "You will type the answer"
+                    : `${currentGuesser?.name ?? "Teammate"} will guess`}
+              </span>
             </article>
             <p className="handoff">
               {roomState.currentActorId === playerId
                 ? "Memorize the clue. When you start, act silently while your teammate guesses."
-                : `${currentActor?.name ?? "The actor"} is up for ${activeTeam.name}.`}
+                : `${currentActor?.name ?? "The actor"} is acting for ${activeTeam.name}.`}
             </p>
             <button
               className="primary-button"
@@ -1265,9 +1323,11 @@ export function App() {
               <span>
                 {roomState.currentActorId === playerId
                   ? roomState.currentClue?.category
-                  : localPlayer?.teamId === activeTeam.id
-                    ? "Guess out loud"
-                    : "Watch quietly"}
+                  : isActiveGuesser
+                    ? "Type the answer"
+                    : currentGuesser?.id
+                      ? `${currentGuesser.name} is guessing`
+                      : "Watch quietly"}
               </span>
             </div>
             {isActor && (
@@ -1294,17 +1354,23 @@ export function App() {
                 challengeProposal={challengeProposal}
               />
             )}
-            {isActiveGuesser && <DeliveredClues proposals={deliveredProposals} />}
-            <div className="turn-controls">
-              <button className="success-button" type="button" onClick={() => finishTurn("guessed")} disabled={!canControlTurn}>
-                <Check size={22} />
-                Guessed
-              </button>
-              <button className="danger-button" type="button" onClick={() => finishTurn("skipped")} disabled={!canControlTurn}>
+            {isActiveGuesser && (
+              <>
+                <DeliveredClues proposals={deliveredProposals} />
+                <GuessPanel
+                  guess={typedGuess}
+                  status={guessStatus}
+                  setGuess={setTypedGuess}
+                  submitGuess={submitGuess}
+                />
+              </>
+            )}
+            {canControlTurn && (
+              <button className="danger-button" type="button" onClick={() => finishTurn("skipped")}>
                 <X size={22} />
                 No point
               </button>
-            </div>
+            )}
           </section>
         )}
 
@@ -1463,6 +1529,45 @@ function PackBanner({ categoryId, difficulty }: { categoryId: CategoryId; diffic
   );
 }
 
+function GuessPanel({
+  guess,
+  status,
+  setGuess,
+  submitGuess,
+}: {
+  guess: string;
+  status: string;
+  setGuess: (value: string) => void;
+  submitGuess: () => void;
+}) {
+  return (
+    <div className="panel guess-panel">
+      <div className="panel-heading">
+        <h2>Your guess</h2>
+        <span>Type the exact answer</span>
+      </div>
+      <form
+        className="guess-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          submitGuess();
+        }}
+      >
+        <input
+          value={guess}
+          placeholder="Type answer"
+          autoComplete="off"
+          onChange={(event) => setGuess(event.target.value)}
+        />
+        <button className="primary-button compact" type="submit">
+          Submit
+        </button>
+      </form>
+      {status && <p className="status-line">{status}</p>}
+    </div>
+  );
+}
+
 function ActorCluePanel({
   imageQuery,
   imageResults,
@@ -1546,6 +1651,10 @@ function SketchPad({ onSend }: { onSend: (dataUrl: string) => void }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
+  useEffect(() => {
+    clearSketch();
+  }, []);
+
   function getPoint(event: PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     if (!canvas) {
@@ -1602,7 +1711,8 @@ function SketchPad({ onSend }: { onSend: (dataUrl: string) => void }) {
     if (!canvas || !context) {
       return;
     }
-    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
   }
 
   function sendSketch() {

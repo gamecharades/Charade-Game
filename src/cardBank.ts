@@ -775,6 +775,10 @@ export function getDifficultyName(difficulty: DifficultyId) {
   return titleCaseDifficulty(difficulty);
 }
 
+function cleanCardAnswer(subject: string) {
+  return subject.replace(/^(a|an|the)\s+/i, "").trim();
+}
+
 export function generateCardPack(
   categoryId: CategoryId,
   difficulty: DifficultyId,
@@ -789,10 +793,10 @@ export function generateCardPack(
   for (const subject of subjectList) {
     for (const template of templates) {
       for (const context of contexts) {
-        const text = `${template.replace("{subject}", subject)} ${context}`;
+        const answer = cleanCardAnswer(subject);
         cards.push({
           id: `${categoryId}-${difficulty}-${cards.length + 1}`,
-          text,
+          text: answer,
           categoryId,
           categoryName,
           difficulty,
