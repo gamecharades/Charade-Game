@@ -6,11 +6,75 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = process.env.PORT || 4174;
+const rooms = new Map();
 
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "15mb" }));
+
+function cleanRoomCode(value) {
+  return String(value ?? "").trim().toUpperCase();
+}
+
+function phaseRank(phase) {
+  const ranks = {
+    lobby: 0,
+    "turn-ready": 1,
+    acting: 2,
+    "turn-result": 3,
+    "game-over": 4,
+  };
+  return ranks[phase] ?? -1;
+}
+
+function shouldStoreState(existing, incoming) {
+  if (!incoming || typeof incoming !== "object") {
+    return false;
+  }
+  if (!existing) {
+    return true;
+  }
+  if (phaseRank(incoming.phase) > phaseRank(existing.phase)) {
+    return true;
+  }
+  const incomingRevision = Number(incoming.revision ?? 0);
+  const existingRevision = Number(existing.revision ?? 0);
+  if (incomingRevision > existingRevision) {
+    return true;
+  }
+  if (incomingRevision < existingRevision) {
+    return false;
+  }
+  return phaseRank(incoming.phase) >= phaseRank(existing.phase);
+}
 
 app.get("/api/health", (_request, response) => {
   response.json({ ok: true });
+});
+
+app.get("/api/rooms/:roomCode/state", (request, response) => {
+  const roomCode = cleanRoomCode(request.params.roomCode);
+  const state = rooms.get(roomCode);
+  if (!state) {
+    response.status(404).json({ error: "Room state not found." });
+    return;
+  }
+  response.json({ state });
+});
+
+app.put("/api/rooms/:roomCode/state", (request, response) => {
+  const roomCode = cleanRoomCode(request.params.roomCode);
+  const incoming = request.body?.state;
+  if (!roomCode || !incoming) {
+    response.status(400).json({ error: "Missing room state." });
+    return;
+  }
+
+  const state = { ...incoming, roomCode };
+  const existing = rooms.get(roomCode);
+  if (shouldStoreState(existing, state)) {
+    rooms.set(roomCode, state);
+  }
+
+  response.json({ state: rooms.get(roomCode) });
 });
 
 app.get("/api/image-search", async (request, response) => {
