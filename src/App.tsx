@@ -55,6 +55,7 @@ type Player = {
   name: string;
   teamId: TeamId;
   isReady: boolean;
+  updatedAt: number;
 };
 
 type Clue = {
@@ -93,6 +94,7 @@ type ImageResult = {
 
 type RoomState = {
   roomCode: string;
+  revision: number;
   hostId: string;
   teams: [Team, Team];
   players: Player[];
@@ -116,10 +118,17 @@ type RoomState = {
   } | null;
 };
 
+type RoomSettings = {
+  teams: [Team, Team];
+  turnSeconds: number;
+  winningScore: number;
+  selectedCategory: CategoryId;
+  selectedDifficulty: DifficultyId;
+};
+
 type BroadcastPayload =
   | { type: "state-sync"; state: RoomState; targetId?: string }
   | { type: "state-request"; player: Player }
-  | { type: "player-joined"; player: Player }
   | { type: "player-updated"; player: Player }
   | { type: "proposal-created"; proposal: MediaProposal }
   | { type: "proposal-voted"; proposalId: string; playerId: string }
@@ -130,6 +139,20 @@ const defaultTeams: [Team, Team] = [
   { id: 1, name: "Team Moonshot", score: 0 },
   { id: 2, name: "Team High Five", score: 0 },
 ];
+
+function cloneTeams(teams: [Team, Team]) {
+  return teams.map((team) => ({ ...team })) as [Team, Team];
+}
+
+function makeDefaultSettings(): RoomSettings {
+  return {
+    teams: cloneTeams(defaultTeams),
+    turnSeconds: 90,
+    winningScore: 7,
+    selectedCategory: CATEGORY_PACKS[0].id,
+    selectedDifficulty: "normal",
+  };
+}
 
 function makeId() {
   return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
@@ -153,17 +176,18 @@ function shuffleClues(clues: Clue[]) {
   return [...clues].sort(() => Math.random() - 0.5);
 }
 
-function makeRoomState(roomCode: string, host: Player): RoomState {
+function makeRoomState(roomCode: string, host: Player, settings: RoomSettings = makeDefaultSettings()): RoomState {
   return {
     roomCode,
+    revision: 1,
     hostId: host.id,
-    teams: defaultTeams,
+    teams: cloneTeams(settings.teams),
     players: [host],
     phase: "lobby",
-    turnSeconds: 90,
-    winningScore: 7,
-    selectedCategory: CATEGORY_PACKS[0].id,
-    selectedDifficulty: "normal",
+    turnSeconds: settings.turnSeconds,
+    winningScore: settings.winningScore,
+    selectedCategory: settings.selectedCategory,
+    selectedDifficulty: settings.selectedDifficulty,
     clues: [],
     deck: [],
     currentTeamIndex: 0,
@@ -178,19 +202,23 @@ function makeRoomState(roomCode: string, host: Player): RoomState {
 
 function upsertPlayer(players: Player[], player: Player) {
   return players.some((item) => item.id === player.id)
-    ? players.map((item) => (item.id === player.id ? player : item))
+    ? players.map((item) => (item.id === player.id ? mergePlayer(item, player) : item))
     : [...players, player];
 }
 
 function addPlayerToRoom(players: Player[], player: Player) {
   if (players.some((item) => item.id === player.id)) {
     return resetReadyIfTeamsUnbalanced(
-      updatePlayer(players, player.id, (existing) => ({ ...existing, name: player.name })),
+      updatePlayer(players, player.id, (existing) => mergePlayer(existing, player)),
     );
   }
   const counts = getCounts(players);
   const teamId: TeamId = counts.teamOne <= counts.teamTwo ? 1 : 2;
   return resetReadyIfTeamsUnbalanced([...players, { ...player, teamId, isReady: false }]);
+}
+
+function mergePlayer(existing: Player, incoming: Player) {
+  return (incoming.updatedAt ?? 0) >= (existing.updatedAt ?? 0) ? incoming : existing;
 }
 
 function updatePlayer(
@@ -301,8 +329,10 @@ export function App() {
     [],
   );
   const [playerName, setPlayerName] = useState(localStorage.getItem("charades-player-name") ?? "");
+  const [playerUpdatedAt, setPlayerUpdatedAt] = useState(Date.now());
   const [teamId, setTeamId] = useState<TeamId>(1);
   const [isReady, setIsReady] = useState(false);
+  const [draftSettings, setDraftSettings] = useState<RoomSettings>(() => makeDefaultSettings());
   const [roomInput, setRoomInput] = useState("");
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [connectionStatus, setConnectionStatus] = useState("Offline setup");
@@ -319,8 +349,9 @@ export function App() {
       name: playerName.trim() || "Player",
       teamId,
       isReady,
+      updatedAt: playerUpdatedAt,
     }),
-    [playerId, playerName, teamId, isReady],
+    [playerId, playerName, teamId, isReady, playerUpdatedAt],
   );
 
   const isHost = roomState?.hostId === playerId;
@@ -423,9 +454,15 @@ export function App() {
     }
   }, [player.name, player.teamId, player.isReady]);
 
+  function updatePlayerName(name: string) {
+    setPlayerName(name);
+    setPlayerUpdatedAt(Date.now());
+  }
+
   function chooseTeam(nextTeamId: TeamId) {
     setTeamId(nextTeamId);
     setIsReady(false);
+    setPlayerUpdatedAt(Date.now());
   }
 
   function toggleReady(ready: boolean) {
@@ -433,6 +470,7 @@ export function App() {
       return;
     }
     setIsReady(ready);
+    setPlayerUpdatedAt(Date.now());
   }
 
   useEffect(() => {
@@ -447,7 +485,16 @@ export function App() {
     }
   }, [roomState?.players, localPlayer?.id]);
 
-  function setSyncedState(nextState: RoomState) {
+  function setSyncedState(nextState: RoomState, force = false) {
+    const current = stateRef.current;
+    if (
+      !force &&
+      current &&
+      current.roomCode === nextState.roomCode &&
+      nextState.revision < current.revision
+    ) {
+      return;
+    }
     stateRef.current = nextState;
     setRoomState(nextState);
   }
@@ -462,14 +509,20 @@ export function App() {
   function commitState(updater: (state: RoomState) => RoomState) {
     const current = stateRef.current;
     if (!current) {
-      return;
+      return null;
     }
-    const nextState = updater(current);
+    const nextState = { ...updater(current), revision: current.revision + 1 };
     setSyncedState(nextState);
     void broadcast({ type: "state-sync", state: nextState });
+    return nextState;
   }
 
-  async function connect(roomCode: string, nextPlayer: Player, asHost: boolean) {
+  async function connect(
+    roomCode: string,
+    nextPlayer: Player,
+    asHost: boolean,
+    settings: RoomSettings = makeDefaultSettings(),
+  ) {
     const cleanCode = roomCode.trim().toUpperCase();
     if (!cleanCode) {
       return;
@@ -479,7 +532,7 @@ export function App() {
     setConnectionStatus(isSupabaseConfigured ? "Connecting..." : "Local demo mode");
 
     if (!isSupabaseConfigured || !supabase) {
-      setSyncedState(makeRoomState(cleanCode, nextPlayer));
+      setSyncedState(makeRoomState(cleanCode, nextPlayer, settings), true);
       return;
     }
 
@@ -506,11 +559,10 @@ export function App() {
       setConnectionStatus("Connected");
       await channel.track({ playerId, name: nextPlayer.name, teamId: nextPlayer.teamId });
       if (asHost) {
-        const nextState = makeRoomState(cleanCode, nextPlayer);
-        setSyncedState(nextState);
+        const nextState = makeRoomState(cleanCode, nextPlayer, settings);
+        setSyncedState(nextState, true);
         await broadcast({ type: "state-sync", state: nextState });
       } else {
-        await broadcast({ type: "player-joined", player: nextPlayer });
         await broadcast({ type: "state-request", player: nextPlayer });
       }
     });
@@ -527,17 +579,15 @@ export function App() {
     }
 
     if (payload.type === "state-request" && current?.hostId === playerId) {
-      commitState((state) => ({ ...state, players: addPlayerToRoom(state.players, payload.player) }));
-      void broadcast({ type: "state-sync", state: stateRef.current!, targetId: payload.player.id });
+      const nextState = commitState((state) => ({ ...state, players: addPlayerToRoom(state.players, payload.player) }));
+      if (nextState) {
+        void broadcast({ type: "state-sync", state: nextState, targetId: payload.player.id });
+      }
       return;
     }
 
     if (!current || current.hostId !== playerId) {
       return;
-    }
-
-    if (payload.type === "player-joined") {
-      commitState((state) => ({ ...state, players: addPlayerToRoom(state.players, payload.player) }));
     }
 
     if (payload.type === "player-updated") {
@@ -579,7 +629,7 @@ export function App() {
   }
 
   function createRoom() {
-    void connect(makeRoomCode(), player, true);
+    void connect(makeRoomCode(), player, true, draftSettings);
   }
 
   function joinRoom() {
@@ -874,35 +924,23 @@ export function App() {
     }));
   }
 
-  function updateTeamName(id: TeamId, name: string) {
-    if (!isHost) {
-      return;
-    }
-    commitState((state) => ({
-      ...state,
-      teams: state.teams.map((team) => (team.id === id ? { ...team, name } : team)) as [Team, Team],
+  function updateDraftTeamName(id: TeamId, name: string) {
+    setDraftSettings((settings) => ({
+      ...settings,
+      teams: settings.teams.map((team) => (team.id === id ? { ...team, name } : team)) as [Team, Team],
     }));
   }
 
-  function updateSetting(key: "turnSeconds" | "winningScore", value: number) {
-    if (!isHost) {
-      return;
-    }
-    commitState((state) => ({ ...state, [key]: value }));
+  function updateDraftSetting(key: "turnSeconds" | "winningScore", value: number) {
+    setDraftSettings((settings) => ({ ...settings, [key]: value }));
   }
 
-  function updateDifficulty(difficulty: DifficultyId) {
-    if (!isHost) {
-      return;
-    }
-    commitState((state) => ({ ...state, selectedDifficulty: difficulty }));
+  function updateDraftDifficulty(difficulty: DifficultyId) {
+    setDraftSettings((settings) => ({ ...settings, selectedDifficulty: difficulty }));
   }
 
-  function updateCategory(category: CategoryId) {
-    if (!isHost) {
-      return;
-    }
-    commitState((state) => ({ ...state, selectedCategory: category }));
+  function updateDraftCategory(category: CategoryId) {
+    setDraftSettings((settings) => ({ ...settings, selectedCategory: category }));
   }
 
   async function copyInvite() {
@@ -941,7 +979,71 @@ export function App() {
                 <input
                   value={playerName}
                   placeholder="Your name"
-                  onChange={(event) => setPlayerName(event.target.value)}
+                  onChange={(event) => updatePlayerName(event.target.value)}
+                />
+              </label>
+            </div>
+
+            <div className="settings-grid host-settings">
+              <label className="setting-card">
+                <BookOpen size={18} />
+                <span>Field</span>
+                <select
+                  value={draftSettings.selectedCategory}
+                  onChange={(event) => updateDraftCategory(event.target.value as CategoryId)}
+                >
+                  {CATEGORY_PACKS.map((category) => (
+                    <option value={category.id} key={category.id}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="setting-card">
+                <Shuffle size={18} />
+                <span>Difficulty</span>
+                <select
+                  value={draftSettings.selectedDifficulty}
+                  onChange={(event) => updateDraftDifficulty(event.target.value as DifficultyId)}
+                >
+                  {DIFFICULTIES.map((difficulty) => (
+                    <option value={difficulty.id} key={difficulty.id}>
+                      {difficulty.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {draftSettings.teams.map((team) => (
+                <label className="setting-card" key={team.id}>
+                  <Users size={18} />
+                  <span>Team {team.id} name</span>
+                  <input
+                    value={team.name}
+                    onChange={(event) => updateDraftTeamName(team.id, event.target.value)}
+                  />
+                </label>
+              ))}
+              <label className="setting-card">
+                <Clock size={18} />
+                <span>Turn timer</span>
+                <select
+                  value={draftSettings.turnSeconds}
+                  onChange={(event) => updateDraftSetting("turnSeconds", Number(event.target.value))}
+                >
+                  <option value={60}>1 minute</option>
+                  <option value={90}>1.5 minutes</option>
+                  <option value={120}>2 minutes</option>
+                </select>
+              </label>
+              <label className="setting-card">
+                <Trophy size={18} />
+                <span>Winning score</span>
+                <input
+                  type="number"
+                  min={3}
+                  max={30}
+                  value={draftSettings.winningScore}
+                  onChange={(event) => updateDraftSetting("winningScore", Number(event.target.value))}
                 />
               </label>
             </div>
@@ -970,73 +1072,7 @@ export function App() {
           <section className="screen setup-screen">
             <RoomHeader roomState={roomState} shareUrl={shareUrl} copyInvite={copyInvite} />
 
-            {isHost && (
-              <div className="settings-grid host-settings">
-                <label className="setting-card">
-                  <BookOpen size={18} />
-                  <span>Field</span>
-                  <select
-                    value={roomState.selectedCategory ?? CATEGORY_PACKS[0].id}
-                    onChange={(event) => updateCategory(event.target.value as CategoryId)}
-                  >
-                    {CATEGORY_PACKS.map((category) => (
-                      <option value={category.id} key={category.id}>
-                        {category.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="setting-card">
-                  <Shuffle size={18} />
-                  <span>Difficulty</span>
-                  <select
-                    value={roomState.selectedDifficulty ?? "normal"}
-                    onChange={(event) => updateDifficulty(event.target.value as DifficultyId)}
-                  >
-                    {DIFFICULTIES.map((difficulty) => (
-                      <option value={difficulty.id} key={difficulty.id}>
-                        {difficulty.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {roomState.teams.map((team) => (
-                  <label className="setting-card" key={team.id}>
-                    <Users size={18} />
-                    <span>Team {team.id} name</span>
-                    <input
-                      value={team.name}
-                      onChange={(event) => updateTeamName(team.id, event.target.value)}
-                    />
-                  </label>
-                ))}
-                <label className="setting-card">
-                  <Clock size={18} />
-                  <span>Turn timer</span>
-                  <select
-                    value={roomState.turnSeconds}
-                    onChange={(event) => updateSetting("turnSeconds", Number(event.target.value))}
-                  >
-                    <option value={60}>1 minute</option>
-                    <option value={90}>1.5 minutes</option>
-                    <option value={120}>2 minutes</option>
-                  </select>
-                </label>
-                <label className="setting-card">
-                  <Trophy size={18} />
-                  <span>Winning score</span>
-                  <input
-                    type="number"
-                    min={3}
-                    max={30}
-                    value={roomState.winningScore}
-                    onChange={(event) => updateSetting("winningScore", Number(event.target.value))}
-                  />
-                </label>
-              </div>
-            )}
-
-            {!isHost && roomState.selectedCategory && roomState.selectedDifficulty && (
+            {roomState.selectedCategory && roomState.selectedDifficulty && (
               <PackBanner categoryId={roomState.selectedCategory} difficulty={roomState.selectedDifficulty} />
             )}
 
@@ -1046,7 +1082,7 @@ export function App() {
               localPlayerId={playerId}
               localTeamId={teamId}
               localPlayerName={playerName}
-              setLocalPlayerName={setPlayerName}
+              setLocalPlayerName={updatePlayerName}
               chooseTeam={chooseTeam}
               toggleReady={toggleReady}
               canReady={teamsReadyBalanced}
