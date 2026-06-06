@@ -173,8 +173,45 @@ function makeRoomCode() {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
 }
 
-function shuffleClues(clues: Clue[]) {
-  return [...clues].sort(() => Math.random() - 0.5);
+function hashString(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function seededRandom(seed: number) {
+  let value = seed;
+  return () => {
+    value += 0x6d2b79f5;
+    let next = value;
+    next = Math.imul(next ^ (next >>> 15), next | 1);
+    next ^= next + Math.imul(next ^ (next >>> 7), next | 61);
+    return ((next ^ (next >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffleClues(clues: Clue[], seed: string) {
+  const random = seededRandom(hashString(seed));
+  const shuffled = [...clues];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
+function getPhaseRank(phase: Phase) {
+  const ranks: Record<Phase, number> = {
+    lobby: 0,
+    "turn-ready": 1,
+    acting: 2,
+    "turn-result": 3,
+    "game-over": 4,
+  };
+  return ranks[phase];
 }
 
 function makeRoomState(roomCode: string, host: Player, settings: RoomSettings = makeDefaultSettings()): RoomState {
@@ -471,10 +508,10 @@ export function App() {
   }, [roomState?.phase, secondsLeft, isHost]);
 
   useEffect(() => {
-    if (roomState?.phase === "lobby" && canStart && isHost) {
+    if (roomState?.phase === "lobby" && canStart) {
       startGame();
     }
-  }, [roomState?.phase, canStart, isHost]);
+  }, [roomState?.phase, canStart]);
 
   useEffect(() => {
     if (!roomState || !localPlayer) {
@@ -525,7 +562,8 @@ export function App() {
       !force &&
       current &&
       current.roomCode === nextState.roomCode &&
-      nextState.revision < current.revision
+      nextState.revision < current.revision &&
+      getPhaseRank(nextState.phase) <= getPhaseRank(current.phase)
     ) {
       return;
     }
@@ -913,7 +951,10 @@ export function App() {
         difficulty: card.difficulty,
         authorId: "card-bank",
       }));
-      const deck = shuffleClues([...generatedClues, ...state.clues]);
+      const deck = shuffleClues(
+        [...generatedClues, ...state.clues],
+        `${state.roomCode}:${selectedCategory}:${selectedDifficulty}`,
+      );
       const activeTeamId = state.teams[0].id;
       const actorId = selectActor(state.players, activeTeamId, null);
       return {
