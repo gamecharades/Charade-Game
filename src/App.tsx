@@ -63,6 +63,7 @@ type Player = {
   id: string;
   name: string;
   teamId: TeamId;
+  isReady: boolean;
 };
 
 type Clue = {
@@ -131,7 +132,7 @@ type BroadcastPayload =
   | { type: "state-request"; player: Player }
   | { type: "player-joined"; player: Player }
   | { type: "player-updated"; player: Player }
-  | { type: "vote-cast"; playerId: string; categoryId: CategoryId; difficulty: DifficultyId }
+  | { type: "vote-cast"; playerId: string; categoryId?: CategoryId; difficulty?: DifficultyId }
   | { type: "clue-added"; clue: Clue }
   | { type: "proposal-created"; proposal: MediaProposal }
   | { type: "proposal-voted"; proposalId: string; playerId: string }
@@ -207,10 +208,10 @@ function makeRoomState(roomCode: string, host: Player): RoomState {
     phase: "lobby",
     turnSeconds: 90,
     winningScore: 7,
-    categoryVotes: { [host.id]: "everyday-life" },
-    difficultyVotes: { [host.id]: "normal" },
+    categoryVotes: {},
+    difficultyVotes: {},
     selectedCategory: null,
-    selectedDifficulty: null,
+    selectedDifficulty: "normal",
     clues: [],
     deck: [],
     currentTeamIndex: 0,
@@ -229,6 +230,25 @@ function upsertPlayer(players: Player[], player: Player) {
     : [...players, player];
 }
 
+function addPlayerToRoom(players: Player[], player: Player) {
+  if (players.some((item) => item.id === player.id)) {
+    return resetReadyIfTeamsUnbalanced(
+      updatePlayer(players, player.id, (existing) => ({ ...existing, name: player.name })),
+    );
+  }
+  const counts = getCounts(players);
+  const teamId: TeamId = counts.teamOne <= counts.teamTwo ? 1 : 2;
+  return resetReadyIfTeamsUnbalanced([...players, { ...player, teamId, isReady: false }]);
+}
+
+function updatePlayer(
+  players: Player[],
+  playerId: string,
+  updater: (player: Player) => Player,
+) {
+  return players.map((player) => (player.id === playerId ? updater(player) : player));
+}
+
 function selectActor(players: Player[], teamId: TeamId, previousActorId: string | null) {
   const teamPlayers = players.filter((player) => player.teamId === teamId);
   if (teamPlayers.length === 0) {
@@ -243,6 +263,18 @@ function getCounts(players: Player[]) {
     teamOne: players.filter((player) => player.teamId === 1).length,
     teamTwo: players.filter((player) => player.teamId === 2).length,
   };
+}
+
+function teamsAreReadyBalanced(players: Player[]) {
+  const counts = getCounts(players);
+  return counts.teamOne === 2 && counts.teamTwo === 2;
+}
+
+function resetReadyIfTeamsUnbalanced(players: Player[]) {
+  if (teamsAreReadyBalanced(players) || players.every((player) => !player.isReady)) {
+    return players;
+  }
+  return players.map((player) => ({ ...player, isReady: false }));
 }
 
 function countVotes<T extends string>(votes: Record<string, T>, options: readonly T[]) {
@@ -324,9 +356,15 @@ export function App() {
   const stateRef = useRef<RoomState | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const autoJoinAttemptedRef = useRef(false);
   const playerId = useMemo(getStoredPlayerId, []);
+  const urlRoomCode = useMemo(
+    () => new URLSearchParams(window.location.search).get("room")?.trim().toUpperCase() ?? "",
+    [],
+  );
   const [playerName, setPlayerName] = useState(localStorage.getItem("charades-player-name") ?? "");
   const [teamId, setTeamId] = useState<TeamId>(1);
+  const [isReady, setIsReady] = useState(false);
   const [roomInput, setRoomInput] = useState("");
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [connectionStatus, setConnectionStatus] = useState("Offline setup");
@@ -344,8 +382,9 @@ export function App() {
       id: playerId,
       name: playerName.trim() || "Player",
       teamId,
+      isReady,
     }),
-    [playerId, playerName, teamId],
+    [playerId, playerName, teamId, isReady],
   );
 
   const isHost = roomState?.hostId === playerId;
@@ -357,15 +396,18 @@ export function App() {
     ? `${window.location.origin}${window.location.pathname}?room=${roomState.roomCode}`
     : "";
   const counts = roomState ? getCounts(roomState.players) : { teamOne: 0, teamTwo: 0 };
-  const localCategoryVote = roomState?.categoryVotes[playerId] ?? "everyday-life";
-  const localDifficultyVote = roomState?.difficultyVotes[playerId] ?? "normal";
-  const categoryVoteTotals = roomState ? countVotes(roomState.categoryVotes, categoryIds) : [];
-  const difficultyVoteTotals = roomState ? countVotes(roomState.difficultyVotes, difficultyIds) : [];
-  const allPlayersVoted = Boolean(
-    roomState?.players.every(
-      (item) => roomState.categoryVotes[item.id] && roomState.difficultyVotes[item.id],
-    ),
+  const teamsReadyBalanced = roomState ? teamsAreReadyBalanced(roomState.players) : false;
+  const localCategoryVote = roomState?.categoryVotes[playerId] ?? null;
+  const allPlayersPickedField = Boolean(
+    roomState?.players.every((item) => roomState.categoryVotes[item.id]),
   );
+  const hasPickedDeck = Boolean(localCategoryVote);
+  const readyCounts = roomState
+    ? {
+        teamOne: roomState.players.filter((item) => item.teamId === 1 && item.isReady).length,
+        teamTwo: roomState.players.filter((item) => item.teamId === 2 && item.isReady).length,
+      }
+    : { teamOne: 0, teamTwo: 0 };
   const secondsLeft =
     roomState?.phase === "acting" && roomState.turnStartedAt
       ? Math.max(0, roomState.turnSeconds - Math.floor((now - roomState.turnStartedAt) / 1000))
@@ -386,9 +428,11 @@ export function App() {
   const canStart =
     Boolean(roomState) &&
     roomState!.players.length >= 4 &&
-    counts.teamOne >= 2 &&
-    counts.teamTwo >= 2 &&
-    allPlayersVoted;
+    counts.teamOne === 2 &&
+    counts.teamTwo === 2 &&
+    readyCounts.teamOne === 2 &&
+    readyCounts.teamTwo === 2 &&
+    allPlayersPickedField;
 
   useEffect(() => {
     stateRef.current = roomState;
@@ -399,11 +443,18 @@ export function App() {
   }, [playerName]);
 
   useEffect(() => {
-    const roomFromUrl = new URLSearchParams(window.location.search).get("room");
-    if (roomFromUrl) {
-      setRoomInput(roomFromUrl.toUpperCase());
+    if (urlRoomCode) {
+      setRoomInput(urlRoomCode);
     }
-  }, []);
+  }, [urlRoomCode]);
+
+  useEffect(() => {
+    if (!urlRoomCode || roomState || autoJoinAttemptedRef.current) {
+      return;
+    }
+    autoJoinAttemptedRef.current = true;
+    void connect(urlRoomCode, player, false);
+  }, [urlRoomCode, roomState, player.id]);
 
   useEffect(() => {
     const interval = window.setInterval(() => setNow(Date.now()), 500);
@@ -421,13 +472,42 @@ export function App() {
       return;
     }
     if (localPlayer.name === player.name && localPlayer.teamId === player.teamId) {
-      return;
+      if (localPlayer.isReady === player.isReady) {
+        return;
+      }
     }
     broadcast({ type: "player-updated", player });
     if (isHost) {
-      commitState((state) => ({ ...state, players: upsertPlayer(state.players, player) }));
+      commitState((state) => ({
+        ...state,
+        players: resetReadyIfTeamsUnbalanced(upsertPlayer(state.players, player)),
+      }));
     }
-  }, [player.name, player.teamId]);
+  }, [player.name, player.teamId, player.isReady]);
+
+  function chooseTeam(nextTeamId: TeamId) {
+    setTeamId(nextTeamId);
+    setIsReady(false);
+  }
+
+  function toggleReady(ready: boolean) {
+    if (ready && (!roomState || !teamsAreReadyBalanced(roomState.players))) {
+      return;
+    }
+    setIsReady(ready);
+  }
+
+  useEffect(() => {
+    if (!roomState || !localPlayer) {
+      return;
+    }
+    if (localPlayer.isReady !== isReady) {
+      setIsReady(localPlayer.isReady);
+    }
+    if (localPlayer.teamId !== teamId) {
+      setTeamId(localPlayer.teamId);
+    }
+  }, [roomState?.players, localPlayer?.id]);
 
   function setSyncedState(nextState: RoomState) {
     stateRef.current = nextState;
@@ -494,12 +574,6 @@ export function App() {
       } else {
         await broadcast({ type: "player-joined", player: nextPlayer });
         await broadcast({ type: "state-request", player: nextPlayer });
-        await broadcast({
-          type: "vote-cast",
-          playerId,
-          categoryId: "everyday-life",
-          difficulty: "normal",
-        });
       }
     });
   }
@@ -515,7 +589,7 @@ export function App() {
     }
 
     if (payload.type === "state-request" && current?.hostId === playerId) {
-      commitState((state) => ({ ...state, players: upsertPlayer(state.players, payload.player) }));
+      commitState((state) => ({ ...state, players: addPlayerToRoom(state.players, payload.player) }));
       void broadcast({ type: "state-sync", state: stateRef.current!, targetId: payload.player.id });
       return;
     }
@@ -524,15 +598,23 @@ export function App() {
       return;
     }
 
-    if (payload.type === "player-joined" || payload.type === "player-updated") {
-      commitState((state) => ({ ...state, players: upsertPlayer(state.players, payload.player) }));
+    if (payload.type === "player-joined") {
+      commitState((state) => ({ ...state, players: addPlayerToRoom(state.players, payload.player) }));
+    }
+
+    if (payload.type === "player-updated") {
+      commitState((state) => ({
+        ...state,
+        players: resetReadyIfTeamsUnbalanced(upsertPlayer(state.players, payload.player)),
+      }));
     }
 
     if (payload.type === "vote-cast") {
       commitState((state) => ({
         ...state,
-        categoryVotes: { ...state.categoryVotes, [payload.playerId]: payload.categoryId },
-        difficultyVotes: { ...state.difficultyVotes, [payload.playerId]: payload.difficulty },
+        categoryVotes: payload.categoryId
+          ? { ...state.categoryVotes, [payload.playerId]: payload.categoryId }
+          : state.categoryVotes,
       }));
     }
 
@@ -593,16 +675,15 @@ export function App() {
     void broadcast({ type: "clue-added", clue });
   }
 
-  function castLobbyVote(categoryId: CategoryId, difficulty: DifficultyId) {
+  function castLobbyVote(categoryId: CategoryId) {
     if (isHost || !isSupabaseConfigured) {
       commitState((state) => ({
         ...state,
         categoryVotes: { ...state.categoryVotes, [playerId]: categoryId },
-        difficultyVotes: { ...state.difficultyVotes, [playerId]: difficulty },
       }));
       return;
     }
-    void broadcast({ type: "vote-cast", playerId, categoryId, difficulty });
+    void broadcast({ type: "vote-cast", playerId, categoryId });
   }
 
   async function searchImages() {
@@ -784,7 +865,7 @@ export function App() {
   function startGame() {
     commitState((state) => {
       const selectedCategory = resolveVote(state.categoryVotes, categoryIds);
-      const selectedDifficulty = resolveVote(state.difficultyVotes, difficultyIds);
+      const selectedDifficulty = state.selectedDifficulty ?? "normal";
       const generatedClues = generateCardPack(selectedCategory, selectedDifficulty).map((card) => ({
         id: card.id,
         text: card.text,
@@ -881,7 +962,7 @@ export function App() {
       phase: "lobby",
       teams: state.teams.map((team) => ({ ...team, score: 0 })) as [Team, Team],
       selectedCategory: null,
-      selectedDifficulty: null,
+      selectedDifficulty: state.selectedDifficulty ?? "normal",
       deck: [],
       currentTeamIndex: 0,
       currentActorId: null,
@@ -908,6 +989,13 @@ export function App() {
       return;
     }
     commitState((state) => ({ ...state, [key]: value }));
+  }
+
+  function updateDifficulty(difficulty: DifficultyId) {
+    if (!isHost) {
+      return;
+    }
+    commitState((state) => ({ ...state, selectedDifficulty: difficulty }));
   }
 
   async function copyInvite() {
@@ -949,14 +1037,6 @@ export function App() {
                   onChange={(event) => setPlayerName(event.target.value)}
                 />
               </label>
-              <div className="segmented" role="group" aria-label="Choose team">
-                <button className={teamId === 1 ? "selected" : ""} type="button" onClick={() => setTeamId(1)}>
-                  Team 1
-                </button>
-                <button className={teamId === 2 ? "selected" : ""} type="button" onClick={() => setTeamId(2)}>
-                  Team 2
-                </button>
-              </div>
             </div>
 
             <div className="action-stack">
@@ -984,37 +1064,34 @@ export function App() {
             <RoomHeader roomState={roomState} shareUrl={shareUrl} copyInvite={copyInvite} />
             <Scoreboard teams={roomState.teams} activeTeamId={teamId} />
 
-            <div className="panel">
-              <div className="panel-heading">
-                <h2>Players</h2>
-                <span>
-                  {roomState.players.length}/4 minimum ·{" "}
-                  {roomState.players.filter((item) => roomState.categoryVotes[item.id]).length}/
-                  {roomState.players.length} voted
-                </span>
-              </div>
-              <div className="player-grid">
-                {roomState.players.map((item) => (
-                  <article className={item.id === playerId ? "player-card you" : "player-card"} key={item.id}>
-                    <strong>{item.name}</strong>
-                    <span>
-                      {roomState.teams[item.teamId - 1].name}
-                      {roomState.categoryVotes[item.id]
-                        ? ` · ${getCategoryName(roomState.categoryVotes[item.id])}`
-                        : " · needs vote"}
-                    </span>
-                  </article>
-                ))}
-              </div>
-            </div>
-
             <CategoryVotingPanel
               localCategoryVote={localCategoryVote}
-              localDifficultyVote={localDifficultyVote}
-              categoryVoteTotals={categoryVoteTotals}
-              difficultyVoteTotals={difficultyVoteTotals}
               castVote={castLobbyVote}
             />
+
+            {hasPickedDeck ? (
+              <TeamReadyPanel
+                teams={roomState.teams}
+                players={roomState.players}
+                localPlayerId={playerId}
+                localTeamId={teamId}
+                localPlayerName={playerName}
+                setLocalPlayerName={setPlayerName}
+                chooseTeam={chooseTeam}
+                toggleReady={toggleReady}
+                canReady={teamsReadyBalanced}
+              />
+            ) : (
+              <div className="panel waiting-panel">
+                <div className="panel-heading">
+                  <h2>Choose a field first</h2>
+                  <span>{roomState.players.length}/4 joined</span>
+                </div>
+                <p className="status-line">
+                  Pick a field. Team selection unlocks after your choice is saved.
+                </p>
+              </div>
+            )}
 
             <div className="settings-grid">
               {roomState.teams.map((team) => (
@@ -1028,6 +1105,21 @@ export function App() {
                   />
                 </label>
               ))}
+              <label className="setting-card">
+                <Shuffle size={18} />
+                <span>Difficulty</span>
+                <select
+                  value={roomState.selectedDifficulty ?? "normal"}
+                  disabled={!isHost}
+                  onChange={(event) => updateDifficulty(event.target.value as DifficultyId)}
+                >
+                  {DIFFICULTIES.map((difficulty) => (
+                    <option value={difficulty.id} key={difficulty.id}>
+                      {difficulty.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="setting-card">
                 <Clock size={18} />
                 <span>Turn timer</span>
@@ -1066,7 +1158,7 @@ export function App() {
 
             <button className="primary-button" type="button" onClick={() => requestAction("start-game")} disabled={!isHost || !canStart}>
               <Shuffle size={18} />
-              {canStart ? "Start voted game" : "Need 4 players, 2 per team, all voted"}
+              {canStart ? "Start game" : "Need 2 ready players on each team"}
             </button>
           </section>
         )}
@@ -1245,25 +1337,16 @@ function RoomHeader({
 
 function CategoryVotingPanel({
   localCategoryVote,
-  localDifficultyVote,
-  categoryVoteTotals,
-  difficultyVoteTotals,
   castVote,
 }: {
-  localCategoryVote: CategoryId;
-  localDifficultyVote: DifficultyId;
-  categoryVoteTotals: Array<{ id: CategoryId; count: number }>;
-  difficultyVoteTotals: Array<{ id: DifficultyId; count: number }>;
-  castVote: (categoryId: CategoryId, difficulty: DifficultyId) => void;
+  localCategoryVote: CategoryId | null;
+  castVote: (categoryId: CategoryId) => void;
 }) {
-  const categoryCounts = Object.fromEntries(categoryVoteTotals.map((item) => [item.id, item.count]));
-  const difficultyCounts = Object.fromEntries(difficultyVoteTotals.map((item) => [item.id, item.count]));
-
   return (
     <div className="panel vote-panel">
       <div className="panel-heading">
-        <h2>Vote deck</h2>
-        <span>{getTotalCardCount().toLocaleString()} generated cards</span>
+        <h2>What field do you feel like playing in?</h2>
+        <span>Pick one</span>
       </div>
       <div className="vote-grid">
         {CATEGORY_PACKS.map((category) => (
@@ -1271,30 +1354,106 @@ function CategoryVotingPanel({
             className={localCategoryVote === category.id ? "vote-card selected" : "vote-card"}
             type="button"
             key={category.id}
-            onClick={() => castVote(category.id, localDifficultyVote)}
+            onClick={() => castVote(category.id)}
           >
             <strong>{category.name}</strong>
             <span>{category.description}</span>
-            <em>{categoryCounts[category.id] ?? 0} votes</em>
-          </button>
-        ))}
-      </div>
-      <div className="difficulty-grid">
-        {DIFFICULTIES.map((difficulty) => (
-          <button
-            className={localDifficultyVote === difficulty.id ? "difficulty-card selected" : "difficulty-card"}
-            type="button"
-            key={difficulty.id}
-            onClick={() => castVote(localCategoryVote, difficulty.id)}
-          >
-            <strong>{difficulty.name}</strong>
-            <span>{difficulty.description}</span>
-            <em>{difficultyCounts[difficulty.id] ?? 0} votes</em>
           </button>
         ))}
       </div>
       <p className="status-line">
-        {CARDS_PER_PACK.toLocaleString()} cards in every category and difficulty pack.
+        If there is no majority, the app randomly chooses from the fields players selected.
+      </p>
+    </div>
+  );
+}
+
+function TeamReadyPanel({
+  teams,
+  players,
+  localPlayerId,
+  localTeamId,
+  localPlayerName,
+  setLocalPlayerName,
+  chooseTeam,
+  toggleReady,
+  canReady,
+}: {
+  teams: [Team, Team];
+  players: Player[];
+  localPlayerId: string;
+  localTeamId: TeamId;
+  localPlayerName: string;
+  setLocalPlayerName: (name: string) => void;
+  chooseTeam: (teamId: TeamId) => void;
+  toggleReady: (ready: boolean) => void;
+  canReady: boolean;
+}) {
+  const localPlayer = players.find((player) => player.id === localPlayerId);
+
+  return (
+    <div className="panel team-ready-panel">
+      <div className="panel-heading">
+        <h2>Choose your team</h2>
+        <span>{players.length}/4 joined</span>
+      </div>
+      <label className="field-label">
+        Your name
+        <input
+          value={localPlayerName}
+          placeholder="Your name"
+          onChange={(event) => setLocalPlayerName(event.target.value)}
+        />
+      </label>
+      <div className="team-ready-grid">
+        {teams.map((team) => {
+          const teamPlayers = players.filter((player) => player.teamId === team.id);
+          const isSelected = localTeamId === team.id;
+          return (
+            <article className={isSelected ? "team-ready-card selected" : "team-ready-card"} key={team.id}>
+              <div className="team-ready-header">
+                <strong>{team.name}</strong>
+                <span>{teamPlayers.length}/2</span>
+              </div>
+              <button
+                className={isSelected ? "small-button selected" : "small-button"}
+                type="button"
+                onClick={() => chooseTeam(team.id)}
+                disabled={isSelected}
+              >
+                {isSelected ? "Selected" : "Join"}
+              </button>
+              <div className="team-roster">
+                {teamPlayers.map((player) => (
+                  <label className="ready-row" key={player.id}>
+                    <span>{player.name}</span>
+                    {player.id === localPlayerId ? (
+                      <input
+                        type="checkbox"
+                        checked={Boolean(localPlayer?.isReady)}
+                        onChange={(event) => toggleReady(event.target.checked)}
+                        disabled={!canReady}
+                        aria-label="Ready"
+                      />
+                    ) : (
+                      <input type="checkbox" checked={player.isReady} readOnly aria-label={`${player.name} ready`} />
+                    )}
+                  </label>
+                ))}
+                {Array.from({ length: Math.max(0, 2 - teamPlayers.length) }).map((_, index) => (
+                  <div className="ready-row empty" key={`${team.id}-empty-${index}`}>
+                    <span>Waiting for player</span>
+                  </div>
+                ))}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      <p className="status-line">
+        {canReady
+          ? "Ready is unlocked. Tick your box when your team choice is final."
+          : "Balance the room to exactly 2 players on each team to unlock ready."}
       </p>
     </div>
   );
